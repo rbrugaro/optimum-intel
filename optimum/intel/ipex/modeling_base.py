@@ -20,6 +20,11 @@ import warnings
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Dict, Optional, Tuple, Union
+import psutil
+
+# os.environ["OMP_NUM_THREADS"] = "55"
+# os.environ["OMP_PROC_BIND"] = "close"
+# os.environ["GOMP_CPU_AFFINITY"] = f"{0}-{55}"
 
 import intel_extension_for_pytorch as ipex
 import torch
@@ -56,6 +61,7 @@ from ..generation.modeling import prepare_jit_inputs
 from ..utils.import_utils import is_ipex_version, is_torch_version, is_transformers_version
 from ..utils.modeling_utils import MULTI_QUERY_ATTN_MODELS, patch_decoder_attention_mask, recursive_to_device
 
+from numa import memory, info    
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +127,27 @@ def ipex_jit_trace(model, task, use_cache):
 
     return trace_model
 
+def get_int_from_env(env_keys, default):
+    """Returns the first positive env value found in the `env_keys` list or the default."""
+    for e in env_keys:
+        val = int(os.environ.get(e, -1))
+        if val >= 0:
+            return val
+    return default
+def set_affinity(cpu_ranges):
+    available_cpus = list(range(psutil.cpu_count(logical=True)))
+    affinity_mask = set()
+    for start, end in cpu_ranges:
+        if start in available_cpus and end in available_cpus:
+            affinity_mask.update(range(start, end + 1))
+        else:
+            print(f"CPU range {start}-{end} is out of the valid range for this system.")
+        return False
 
+    # Set the process affinity
+    current_process = psutil.Process()
+    current_process.cpu_affinity(list(affinity_mask))
+    return True
 class IPEXModel(OptimizedModel):
     auto_model_class = AutoModel
     export_feature = "feature-extraction"
@@ -138,12 +164,75 @@ class IPEXModel(OptimizedModel):
         warmup: bool = True,
         **kwargs,
     ):
+        # cpu_ranges = [(0, 55)]
+
+        # # Create a set of all CPU indices in the specified ranges
+        # affinity_mask = set()
+        # for start, end in cpu_ranges:
+        #     affinity_mask.update(range(start, end + 1))
+
+        # # Convert the set to a list because os.sched_setaffinity expects a list or iterable of CPU indices
+        # affinity_mask_list = list(affinity_mask)
+
+        #         # Set the CPU affinity for the current process
+        #         #os.environ["OMP_PROC_BIND"] = "close"
+        #         #os.environ["GOMP_CPU_AFFINITY"] = f"{affinity_mask_list[0]}-{affinity_mask_list[-1]}"
+        # if not set_affinity(cpu_ranges):
+        #     warnings.warn(
+        #         f"Failed to set CPU affinity due to invalid CPU ranges."
+        #     )
+
         if is_torch_xpu_available(check_device=True):
             self._device = torch.device("xpu:0")
         elif torch.cuda.is_available():
             self._device = torch.device("cuda:0")
         else:
             self._device = torch.device("cpu")
+            if ( get_int_from_env(["OMP_NUM_THREADS"], 0) == 0
+            ):
+                local_size = get_int_from_env(
+                    ["MPI_LOCALNRANKS", "OMPI_COMM_WORLD_LOCAL_SIZE", "MV2_COMM_WORLD_LOCAL_SIZE"], 1
+                    )
+                num_cpu_threads_per_process = int(psutil.cpu_count(logical=False) / local_size)
+                if num_cpu_threads_per_process == 0:
+                    num_cpu_threads_per_process = 1
+                    # Define the CPU ranges as tuples (start, end)
+                # cpu_ranges = [(0, 55)]
+
+                # # Create a set of all CPU indices in the specified ranges
+                # affinity_mask = set()
+                # for start, end in cpu_ranges:
+                #     affinity_mask.update(range(start, end + 1))
+
+                # # Convert the set to a list because os.sched_setaffinity expects a list or iterable of CPU indices
+                # affinity_mask_list = list(affinity_mask)
+
+                # # Set the CPU affinity for the current process
+                # #os.environ["OMP_PROC_BIND"] = "close"
+                # #os.environ["GOMP_CPU_AFFINITY"] = f"{affinity_mask_list[0]}-{affinity_mask_list[-1]}"
+                # if not set_affinity(cpu_ranges):
+                #     warnings.warn(
+                #         f"Failed to set CPU affinity due to invalid CPU ranges."
+                #     )
+                torch.set_num_threads(num_cpu_threads_per_process)
+
+
+                # warnings.warn(
+                #     f"OMP_NUM_THREADS/MKL_NUM_THREADS unset, we set it at {num_cpu_threads_per_process} to improve oob"
+                #     " performance."
+                # )
+                #max_node = info.get_max_node()
+                #nodes_set = list(filter(lambda x: x % 2 == 1, list(range(max_node + 1))))
+                # memory.set_membind_nodes(affinity_mask_list)
+                # nodes_get = memory.get_membind_nodes()
+
+                # warnings.warn(
+                #         f"numa nodes_set numa nodes get {nodes_get} "
+                #     )
+                # warnings.warn(
+                #         f"numa hw info {info.node_to_cpus(1)} "
+                #     )
+                #memory.set_membind_nodes(1)
 
         # CPU only support jit model for now.
         if export:
@@ -208,6 +297,16 @@ class IPEXModel(OptimizedModel):
                     "Both the arguments `use_auth_token` and `token` were specified, which is not supported. Please specify only `token`."
                 )
             token = use_auth_token
+        
+        # #if next(model.parameters()).device == "cpu":
+        # print("CPU device")
+        # local_size = get_int_from_env(
+        #     ["MPI_LOCALNRANKS", "OMPI_COMM_WORLD_LOCAL_SIZE", "MV2_COMM_WORLD_LOCAL_SIZE"], 1
+        #     )
+        # num_cpu_threads_per_process = int(psutil.cpu_count(logical=False) / local_size)
+        #     #os.environ["OMP_NUM_THREADS"] = str(num_cpu_threads_per_process)
+        # os.environ["OMP_NUM_THREADS"] = str(5)
+
 
         commit_hash = kwargs.pop("_commit_hash", None)
 

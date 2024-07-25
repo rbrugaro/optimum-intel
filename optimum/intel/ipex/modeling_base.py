@@ -61,7 +61,7 @@ from ..generation.modeling import prepare_jit_inputs
 from ..utils.import_utils import is_ipex_version, is_torch_version, is_transformers_version
 from ..utils.modeling_utils import MULTI_QUERY_ATTN_MODELS, patch_decoder_attention_mask, recursive_to_device
 
-from numa import memory, info    
+#from numa import memory, info    
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,7 @@ def get_int_from_env(env_keys, default):
     return default
 def set_affinity(cpu_ranges):
     available_cpus = list(range(psutil.cpu_count(logical=True)))
+    print("available cpus", available_cpus)
     affinity_mask = set()
     for start, end in cpu_ranges:
         if start in available_cpus and end in available_cpus:
@@ -196,6 +197,14 @@ class IPEXModel(OptimizedModel):
                 num_cpu_threads_per_process = int(psutil.cpu_count(logical=False) / local_size)
                 if num_cpu_threads_per_process == 0:
                     num_cpu_threads_per_process = 1
+                
+
+
+                
+                #os.sched_setaffinity(0, affinity_mask)
+                # print(torch.get_num_threads())
+                #torch.set_num_threads(56)
+                # print(torch.get_num_threads())
                     # Define the CPU ranges as tuples (start, end)
                 # cpu_ranges = [(0, 55)]
 
@@ -214,7 +223,7 @@ class IPEXModel(OptimizedModel):
                 #     warnings.warn(
                 #         f"Failed to set CPU affinity due to invalid CPU ranges."
                 #     )
-                torch.set_num_threads(num_cpu_threads_per_process)
+                #torch.set_num_threads(num_cpu_threads_per_process)
 
 
                 # warnings.warn(

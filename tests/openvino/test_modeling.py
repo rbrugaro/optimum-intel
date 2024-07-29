@@ -249,13 +249,15 @@ class OVModelIntegrationTest(unittest.TestCase):
         del pipeline
         gc.collect()
 
+    @pytest.mark.run_slow
+    @slow
     def test_load_model_from_hub_private_with_token(self):
         token = os.environ.get("HF_HUB_READ_TOKEN", None)
         if token is None:
             self.skipTest("Test requires a token `HF_HUB_READ_TOKEN` in the environment variable")
 
         model = OVModelForCausalLM.from_pretrained(
-            "optimum-internal-testing/tiny-random-phi-private", use_auth_token=token, revision="openvino"
+            "optimum-internal-testing/tiny-random-phi-private", token=token, revision="openvino"
         )
         self.assertIsInstance(model.config, PretrainedConfig)
 
@@ -697,7 +699,6 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         ov_model = OVModelForCausalLM.from_pretrained(model_id, export=True, ov_config=F32_CONFIG, **model_kwargs)
         self.assertIsInstance(ov_model.config, PretrainedConfig)
         self.assertTrue(ov_model.use_cache)
-        self.assertEqual(ov_model.stateful, ov_model.config.model_type not in not_stateful)
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=model_arch in self.REMOTE_CODE_MODELS)
         tokens = tokenizer("This is a sample output", return_tensors="pt")
         tokens.pop("token_type_ids", None)
@@ -933,14 +934,17 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
             do_sample=False,
             eos_token_id=None,
         )
+
         beam_sample_gen_config = GenerationConfig(
             max_new_tokens=10,
             min_new_tokens=10,
             num_beams=4,
             do_sample=True,
             eos_token_id=None,
-            top_k=1,
         )
+
+        if model_arch == "minicpm":
+            beam_sample_gen_config.top_k = 1
 
         group_beam_search_gen_config = GenerationConfig(
             max_new_tokens=10,

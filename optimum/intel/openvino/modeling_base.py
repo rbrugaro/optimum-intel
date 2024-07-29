@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 class OVBaseModel(OptimizedModel):
     auto_model_class = None
     export_feature = None
+    _supports_cache_class = False
 
     def __init__(
         self,
@@ -131,7 +132,11 @@ class OVBaseModel(OptimizedModel):
 
         if isinstance(file_name, str):
             file_name = Path(file_name)
-        model = core.read_model(file_name) if not file_name.suffix == ".onnx" else convert_model(file_name)
+        model = (
+            core.read_model(file_name.resolve(), file_name.with_suffix(".bin").resolve())
+            if not file_name.suffix == ".onnx"
+            else convert_model(file_name)
+        )
         if file_name.suffix == ".onnx":
             model = fix_op_names_duplicates(model)  # should be called during model conversion to IR
 

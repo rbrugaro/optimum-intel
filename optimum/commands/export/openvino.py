@@ -13,7 +13,6 @@
 # limitations under the License.
 """Defines the command line for the export with OpenVINO."""
 
-import json
 import logging
 import sys
 from pathlib import Path
@@ -102,7 +101,7 @@ def parse_args_openvino(parser: "ArgumentParser"):
         default=None,
         help=(
             "A parameter used when applying 4-bit quantization to control the ratio between 4-bit and 8-bit quantization. If set to 0.8, 80%% of the layers will be quantized to int4 "
-            "while 20%% will be quantized to int8. This helps to achieve better accuracy at the sacrifice of the model size and inference latency. Default value is 0.8."
+            "while 20%% will be quantized to int8. This helps to achieve better accuracy at the sacrifice of the model size and inference latency. Default value is 1.0."
         ),
     )
     optional_group.add_argument(
@@ -189,14 +188,6 @@ def parse_args_openvino(parser: "ArgumentParser"):
         action="store_true",
         help="Do not add converted tokenizer and detokenizer OpenVINO models.",
     )
-    # TODO : deprecated
-    optional_group.add_argument("--fp16", action="store_true", help="Compress weights to fp16")
-    optional_group.add_argument("--int8", action="store_true", help="Compress weights to int8")
-    optional_group.add_argument(
-        "--convert-tokenizer",
-        action="store_true",
-        help="[Deprecated] Add converted tokenizer and detokenizer with OpenVINO Tokenizers.",
-    )
 
 
 class OVExportCommand(BaseOptimumCLICommand):
@@ -221,44 +212,21 @@ class OVExportCommand(BaseOptimumCLICommand):
 
     def run(self):
         from ...exporters.openvino.__main__ import infer_task, main_export, maybe_convert_tokenizers
-        from ...intel.openvino.configuration import _DEFAULT_4BIT_CONFIGS, OVConfig
+        from ...intel.openvino.configuration import _DEFAULT_4BIT_CONFIG, OVConfig, get_default_int4_config
 
-        def _get_default_int4_config(model_id_or_path, library_name):
-            if model_id_or_path in _DEFAULT_4BIT_CONFIGS:
-                return _DEFAULT_4BIT_CONFIGS[model_id_or_path]
-            if "transformers" in library_name and (Path(model_id_or_path) / "config.json").exists():
-                with (Path(model_id_or_path) / "config.json").open("r") as config_f:
-                    config = json.load(config_f)
-                    original_model_name = config.get("_name_or_path", "")
-                if original_model_name in _DEFAULT_4BIT_CONFIGS:
-                    return _DEFAULT_4BIT_CONFIGS[original_model_name]
-
-            return {
-                "bits": 4,
-                "ratio": 0.8,
-                "sym": False,
-                "group_size": None,
-                "all_layers": None,
-            }
-
-        library_name = TasksManager.infer_library_from_model(self.args.model, library_name=self.args.library)
-        if library_name == "sentence_transformers" and self.args.library is None:
-            logger.warning(
-                "Library name is not specified. There are multiple possible variants: `sentence_transformers`, `transformers`."
-                "`transformers` will be selected. If you want to load your model with the `sentence-transformers` library instead, please set --library sentence_transformers"
+        if self.args.library is None:
+            # TODO: add revision, subfolder and token to args
+            library_name = TasksManager._infer_library_from_model_name_or_path(
+                model_name_or_path=self.args.model, cache_dir=self.args.cache_dir
             )
-            library_name = "transformers"
-
-        if self.args.fp16:
-            logger.warning(
-                "`--fp16` option is deprecated and will be removed in a future version. Use `--weight-format` instead."
-            )
-            self.args.weight_format = "fp16"
-        if self.args.int8:
-            logger.warning(
-                "`--int8` option is deprecated and will be removed in a future version. Use `--weight-format` instead."
-            )
-            self.args.weight_format = "int8"
+            if library_name == "sentence_transformers":
+                logger.warning(
+                    "Library name is not specified. There are multiple possible variants: `sentence_transformers`, `transformers`."
+                    "`transformers` will be selected. If you want to load your model with the `sentence-transformers` library instead, please set --library sentence_transformers"
+                )
+                library_name = "transformers"
+        else:
+            library_name = self.args.library
 
         if self.args.weight_format is None:
             ov_config = None
@@ -279,11 +247,11 @@ class OVExportCommand(BaseOptimumCLICommand):
                 and self.args.awq is None
                 and self.args.sensitivity_metric is None
             ):
-                quantization_config = _get_default_int4_config(self.args.model, library_name)
+                quantization_config = get_default_int4_config(self.args.model)
             else:
                 quantization_config = {
                     "bits": 8 if is_int8 else 4,
-                    "ratio": 1 if is_int8 else (self.args.ratio or 0.8),
+                    "ratio": 1 if is_int8 else (self.args.ratio or _DEFAULT_4BIT_CONFIG["ratio"]),
                     "sym": self.args.sym or False,
                     "group_size": -1 if is_int8 else self.args.group_size,
                     "all_layers": None if is_int8 else self.args.all_layers,
@@ -301,9 +269,6 @@ class OVExportCommand(BaseOptimumCLICommand):
                 quantization_config["sym"] = "asym" not in self.args.weight_format
                 quantization_config["group_size"] = 128 if "128" in self.args.weight_format else 64
             ov_config = OVConfig(quantization_config=quantization_config)
-
-        if self.args.convert_tokenizer:
-            logger.warning("`--convert-tokenizer` option is deprecated. Tokenizer will be converted by default.")
 
         quantization_config = ov_config.quantization_config if ov_config else None
         quantize_with_dataset = quantization_config and getattr(quantization_config, "dataset", None) is not None
